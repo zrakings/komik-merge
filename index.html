@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comic Page Merger to Single Image (Compressed)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #1a1a1a;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { text-align: center; color: #4285f4; margin-bottom: 5px; }
+        p.subtitle { text-align: center; color: #80868b; margin-bottom: 20px; }
+        .upload-zone {
+            border: 2px dashed #4285f4;
+            padding: 20px;
+            text-align: center;
+            border-radius: 12px;
+            background: #202124;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .action-bar {
+            background: #202124;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex; flex-direction: column; gap: 15px; align-items: center; justify-content: center;
+        }
+        .compress-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #1a1a1a;
+            padding: 8px 15px;
+            border-radius: 6px;
+            border: 1px solid #3c4043;
+            font-size: 14px;
+        }
+        input[type="range"] { cursor: pointer; }
+        button {
+            padding: 12px 25px; font-size: 16px; border-radius: 6px; font-weight: bold;
+            border: none; background-color: #34a853; color: white; cursor: pointer; transition: 0.2s;
+            width: 100%; max-width: 400px;
+        }
+        button:hover { background-color: #2c8a46; }
+        button:disabled { background-color: #3c4043; cursor: not-allowed; color: #80868b; }
+        .status-msg { font-size: 14px; color: #f2994a; font-weight: bold; text-align: center; }
+        .viewer-box {
+            background: #202124;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #3c4043;
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            background: #fff;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Comic Page Merger</h1>
+    <p class="subtitle">Gabungkan semua halaman menjadi 1 JPEG ramah Google Translate (< 10MB)</p>
+    
+    <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+        <p>Klik di sini untuk membuka file <b>PDF / CBZ Komik</b></p>
+        <input type="file" id="fileInput" accept=".pdf, .cbz" style="display:none">
+        <div id="fileName" style="color: #4285f4; font-weight: bold; margin-top: 5px;"></div>
+    </div>
+
+    <div class="action-bar">
+        <div class="compress-control">
+            <label for="qualitySlider">🗜️ Kualitas Gambar:</label>
+            <input type="range" id="qualitySlider" min="0.4" max="0.95" step="0.05" value="0.75">
+            <span id="qualityValue">75%</span>
+        </div>
+        
+        <div id="statusMsg" class="status-msg">Silahkan masukkan file komik dahulu...</div>
+        <button id="mergeDownloadBtn" disabled>⚡ Gabungkan & Unduh Komik (.JPG)</button>
+    </div>
+
+    <div class="viewer-box">
+        <p style="color: #80868b; margin-bottom: 10px;">Pratinjau Hasil Gabungan Canvas:</p>
+        <canvas id="mergedCanvas"></canvas>
+    </div>
+</div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+    const fileInput = document.getElementById('fileInput');
+    const mergedCanvas = document.getElementById('mergedCanvas');
+    const mCtx = mergedCanvas.getContext('2d');
+    
+    const mergeDownloadBtn = document.getElementById('mergeDownloadBtn');
+    const statusMsg = document.getElementById('statusMsg');
+    const qualitySlider = document.getElementById('qualitySlider');
+    const qualityValue = document.getElementById('qualityValue');
+
+    let pdfDoc = null;
+    let cbzImages = [];
+    let loadedImagesArray = [];
+
+    // Tampilkan persentase kualitas saat slider digeser
+    qualitySlider.addEventListener('input', (e) => {
+        qualityValue.textContent = Math.round(e.target.value * 100) + "%";
+    });
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        document.getElementById('fileName').textContent = file.name;
+        statusMsg.textContent = "Sedang membaca file komik...";
+        mergeDownloadBtn.disabled = true;
+        
+        pdfDoc = null; cbzImages = []; loadedImagesArray = [];
+        mCtx.clearRect(0, 0, mergedCanvas.width, mergedCanvas.height);
+
+        const fileExtension = file.name.split('.').pop().toLowerCase();
+
+        if (fileExtension === "pdf") {
+            const fileReader = new FileReader();
+            fileReader.onload = async function() {
+                try {
+                    const typedarray = new Uint8Array(this.result);
+                    pdfDoc = await pdfjsLib.getDocument(typedarray).promise;
+                    statusMsg.textContent = `File PDF terbaca: ${pdfDoc.numPages} halaman. Memproses...`;
+                    processPdfMerger();
+                } catch (err) { statusMsg.textContent = "Gagal memuat PDF."; }
+            };
+            fileReader.readAsArrayBuffer(file);
+        } else if (fileExtension === "cbz" || fileExtension === "zip") {
+            const fileReader = new FileReader();
+            fileReader.onload = async function(event) {
+                try {
+                    const zip = await JSZip.loadAsync(event.target.result);
+                    const imagePromises = [];
+                    zip.forEach((relativePath, zipEntry) => {
+                        if (!zipEntry.dir && /\.(png|jpg|jpeg|gif|webp)$/i.test(zipEntry.name)) {
+                            imagePromises.push(zipEntry.async("base64").then(base64 => {
+                                return { name: zipEntry.name, data: "data:image/png;base64," + base64 };
+                            }));
+                        }
+                    });
+                    const resolvedImages = await Promise.all(imagePromises);
+                    cbzImages = resolvedImages.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true})).map(img => img.data);
+                    statusMsg.textContent = `File CBZ terbaca: ${cbzImages.length} halaman. Memproses...`;
+                    processCbzMerger();
+                } catch (err) { statusMsg.textContent = "Gagal memuat CBZ."; }
+            };
+            fileReader.readAsArrayBuffer(file);
+        }
+    });
+
+    async function processCbzMerger() {
+        const loadImgPromises = cbzImages.map(src => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.src = src;
+            });
+        });
+        loadedImagesArray = await Promise.all(loadImgPromises);
+        drawMergedImages();
+    }
+
+    async function processPdfMerger() {
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+            const page = await pdfDoc.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 }); 
+            
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = viewport.width;
+            tempCanvas.height = viewport.height;
+            await page.render({ canvasContext: tempCanvas.getContext('2d'), viewport: viewport }).promise;
+
+            const img = new Image();
+            await new Promise((resolve) => {
+                img.onload = () => { loadedImagesArray.push(img); resolve(); };
+                img.src = tempCanvas.toDataURL("image/png");
+            });
+        }
+        drawMergedImages();
+    }
+
+    function drawMergedImages() {
+        if (loadedImagesArray.length === 0) return;
+
+        let totalHeight = 0;
+        let maxWidth = 0;
+
+        loadedImagesArray.forEach(img => {
+            totalHeight += img.height;
+            if (img.width > maxWidth) maxWidth = img.width;
+        });
+
+        mergedCanvas.width = maxWidth;
+        mergedCanvas.height = totalHeight;
+
+        // Beri background putih bawaan untuk format JPEG
+        mCtx.fillStyle = "#ffffff";
+        mCtx.fillRect(0, 0, mergedCanvas.width, mergedCanvas.height);
+
+        let currentY = 0;
+        loadedImagesArray.forEach(img => {
+            let offsetX = (maxWidth - img.width) / 2;
+            mCtx.drawImage(img, offsetX, currentY);
+            currentY += img.height;
+        });
+
+        statusMsg.style.color = "#34a853";
+        statusMsg.textContent = `Sukses menggabungkan ${loadedImagesArray.length} halaman!`;
+        mergeDownloadBtn.disabled = false;
+    }
+
+    // Download Handler dengan Kompresi JPEG murni
+    mergeDownloadBtn.addEventListener('click', () => {
+        statusMsg.style.color = "#4285f4";
+        statusMsg.textContent = "Sedang mengompresi gambar agar di bawah 10MB, mohon tunggu...";
+        
+        setTimeout(() => {
+            // Mengambil kualitas dari nilai slider (0.4 - 0.95)
+            const quality = parseFloat(qualitySlider.value);
+            
+            // Mengubah format ke image/jpeg dengan parameter kualitas kompresi
+            const imageURL = mergedCanvas.toDataURL("image/jpeg", quality);
+            
+            const downloadLink = document.createElement('a');
+            downloadLink.href = imageURL;
+            downloadLink.download = `Komik_Compressed_Translate.jpg`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            
+            statusMsg.style.color = "#34a853";
+            statusMsg.textContent = "File gambar terkompresi (.jpg) berhasil diunduh!";
+        }, 50);
+    });
+</script>
+
+</body>
+</html>
